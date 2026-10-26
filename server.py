@@ -35,7 +35,7 @@ def settings():
     with connect() as db: return json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()['value'])
 
 def notices(s):
-    return dict(version='2026-10-v1', privacy=f"個人資料蒐集告知｜蒐集者：{s['organizer'] or '尚待設定'}。目的：課程報名、聯繫、學員管理及課務通知。類別：姓名、電子郵件、電話、LINE ID、報名課程、同意選項及簽署姓名。利用期間：{s['retention'] or '尚待設定'}；地區：臺灣及主辦單位使用之雲端服務所在地，方式為電子及必要紙本處理，對象限主辦單位、受託課務服務人員及必要之雲端代管服務提供者於上述目的必要範圍內使用。你可依個人資料保護法請求查詢、閱覽、複製、補充、更正、停止蒐集處理利用或刪除；聯絡：{s['contact'] or '尚待設定'}。不提供必要資料將無法完成報名。不將資料用於與課程無關的行銷。", portrait='活動記錄肖像授權｜可自由選擇，拒絕不影響報名。若同意，授權主辦單位於上述資料保存期間內，使用課程現場拍攝且包含本人肖像的照片與影片，於官方網站及官方社群公開發布，供本課程活動紀錄及課程介紹使用；網路公開可能跨境瀏覽。不提供第三人作其他商業用途，不作歪曲或有損名譽之使用。可透過個資聯絡方式撤回未來使用授權並申請移除主辦單位控制的內容；已由第三人合法轉載者可能無法完全收回。不同意者請於現場向工作人員表明，以安排避拍或去識別處理。')
+    return dict(version='2026-10-v1', privacy=f"個人資料蒐集告知｜蒐集者：{s['organizer'] or '尚待設定'}。目的：課程報名、繳費對帳、聯繫、學員管理及課務通知。類別：姓名、電子郵件、電話、LINE ID、轉帳帳號後五碼、報名課程、同意選項及簽署姓名。利用期間：{s['retention'] or '尚待設定'}；地區：臺灣及主辦單位使用之雲端服務所在地，方式為電子及必要紙本處理，對象限主辦單位、受託課務服務人員及必要之雲端代管服務提供者於上述目的必要範圍內使用。你可依個人資料保護法請求查詢、閱覽、複製、補充、更正、停止蒐集處理利用或刪除；聯絡：{s['contact'] or '尚待設定'}。不提供必要資料將無法完成報名。不將資料用於與課程無關的行銷。", portrait='活動記錄肖像授權｜可自由選擇，拒絕不影響報名。若同意，授權主辦單位於上述資料保存期間內，使用課程現場拍攝且包含本人肖像的照片與影片，於官方網站及官方社群公開發布，供本課程活動紀錄及課程介紹使用；網路公開可能跨境瀏覽。不提供第三人作其他商業用途，不作歪曲或有損名譽之使用。可透過個資聯絡方式撤回未來使用授權並申請移除主辦單位控制的內容；已由第三人合法轉載者可能無法完全收回。不同意者請於現場向工作人員表明，以安排避拍或去識別處理。')
 
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
@@ -59,9 +59,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.admin(): return self.send(401,{'error':'請先登入'})
             with connect() as db: rows = [dict(r) for r in db.execute('SELECT * FROM registrations ORDER BY created DESC')]
             if path == '/api/admin/export':
-                out=io.StringIO(); w=csv.writer(out); w.writerow(['編號','時間','課程','姓名','Email','電話','LINE ID','肖像授權','簽署','狀態','告知與授權快照'])
+                out=io.StringIO(); w=csv.writer(out); w.writerow(['編號','時間','課程','姓名','Email','電話','LINE ID','轉帳後五碼','肖像授權','簽署','狀態','告知與授權快照'])
                 for r in rows:
-                    values=[r[k] for k in ['id','created','course_id','name','email','phone','line_id','portrait','signature','status','consent_text']]
+                    values=[r[k] for k in ['id','created','course_id','name','email','phone','line_id','transfer_last5','portrait','signature','status','consent_text']]
                     w.writerow(["'"+str(v) if str(v).startswith(('=','+','-','@','\t','\r','\n')) else v for v in values])
                 return self.send(200, ('\ufeff'+out.getvalue()).encode(), 'text/csv; charset=utf-8',{'Content-Disposition':'attachment; filename="registrations.csv"'})
             return self.send(200,dict(registrations=rows,settings=settings()))
@@ -133,13 +133,17 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(line_id, str) or not line_id.strip() or len(line_id.strip()) > 100: raise ValueError()
             line_id = line_id.strip()
             import re
+            transfer_last5 = d.get('transfer_last5', '')
+            if not isinstance(transfer_last5, str) or not re.fullmatch(r'[0-9]{5}', transfer_last5.strip()):
+                return self.send(400, {'error': '請填寫5位數字的轉帳帳號後五碼。'})
+            transfer_last5 = transfer_last5.strip()
             if not all(1<=len(v)<=150 for v in values.values()) or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',values['email']) or not re.fullmatch(r'[+()\d\s-]{7,30}',values['phone']): raise ValueError()
             if values['signature']!=values['name'] or d.get('privacy') is not True or d.get('portrait') not in ['agree','decline']: return self.send(400,{'error':'請完成個資同意、肖像選擇，並以報名姓名簽署'})
             current=notices(s)
             if d.get('notice')!=current: return self.send(409,{'error':'告知內容已更新，請重新整理後閱讀及簽署'})
             with connect(write=True) as db:
                 rid = next_registration_id(db, course['date'])
-                db.execute('INSERT INTO registrations(id,created,course_id,name,email,email_key,phone,privacy,portrait,signature,consent_text,line_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', (rid,datetime.now(ZoneInfo('Asia/Taipei')).isoformat(),course['id'],values['name'],values['email'],normalize_email(values['email']),values['phone'],1,d['portrait'],values['signature'],json.dumps(current,ensure_ascii=False),line_id))
+                db.execute('INSERT INTO registrations(id,created,course_id,name,email,email_key,phone,privacy,portrait,signature,consent_text,line_id,transfer_last5) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', (rid,datetime.now(ZoneInfo('Asia/Taipei')).isoformat(),course['id'],values['name'],values['email'],normalize_email(values['email']),values['phone'],1,d['portrait'],values['signature'],json.dumps(current,ensure_ascii=False),line_id,transfer_last5))
             return self.send(201,{'id':rid})
         self.send(404,{'error':'找不到操作'})
 

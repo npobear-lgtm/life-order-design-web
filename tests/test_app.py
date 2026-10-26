@@ -106,7 +106,7 @@ class AppTest(unittest.TestCase):
         today = datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
         course = next(c for c in public['courses'] if c['date'][:10] >= today)
         return {**dict(course_id=course['id'], name='測試學員', email='test@example.org',
-                       phone='0912345678', line_id='test_line_id', signature='測試學員', privacy=True,
+                       phone='0912345678', line_id='test_line_id', transfer_last5='00123', signature='測試學員', privacy=True,
                        portrait='decline', notice=public['notices']), **overrides}
 
     def test_concurrent_eight_submissions(self):
@@ -227,6 +227,26 @@ class AppTest(unittest.TestCase):
         missing = {k: v for k, v in body.items() if k != 'line_id'}
         self.assertEqual(self.call('/api/register', missing)[0], 400)
         self.assertEqual(self.call('/api/register', body)[0], 201)
+
+    def test_transfer_last5_required_digits_and_preserves_leading_zero(self):
+        body = self.payload()
+        missing = {k: v for k, v in body.items() if k != 'transfer_last5'}
+        self.assertEqual(self.call('/api/register', missing)[0], 400)
+        for value in ['', '   ', '1234', '123456', 'abcde', '１２３４５', None, 12345]:
+            with self.subTest(value=value):
+                code, result, _ = self.call('/api/register', {**body, 'transfer_last5': value})
+                self.assertEqual(code, 400)
+                self.assertIn('5位數字', result['error'])
+        self.assertEqual(self.call('/api/register', {**body, 'transfer_last5': ' 00123 '})[0], 201)
+        cookie = self.login()
+        rows = self.call('/api/admin', cookie=cookie)[1]['registrations']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['transfer_last5'], '00123')
+        self.assertEqual(rows[0]['status'], '待聯繫')
+        self.assertIn('轉帳帳號後五碼', json.loads(rows[0]['consent_text'])['privacy'])
+        import csv, io
+        export = self.call('/api/admin/export', cookie=cookie)[1].decode('utf-8-sig')
+        self.assertEqual(list(csv.DictReader(io.StringIO(export)))[0]['轉帳後五碼'], '00123')
 
     def test_cross_site_requests_rejected(self):
         for path in ['/api/register','/api/login','/api/admin/settings','/api/admin/status']:

@@ -44,6 +44,7 @@ class DatabaseTest(unittest.TestCase):
             row=dict(db.execute('SELECT * FROM registrations').fetchone())
             self.assertEqual(row['email_key'],'test@example.org')
             self.assertEqual(row['line_id'],'')
+            self.assertEqual(row['transfer_last5'],'')
             self.assertEqual(row['consent_text'],'original snapshot')
             self.assertEqual(row['status'],'已確認')
         with self.assertRaises(DuplicateRegistration):
@@ -143,6 +144,7 @@ class DatabaseTest(unittest.TestCase):
                 rows={r['id']:dict(r) for r in db.execute('SELECT * FROM registrations')}
                 self.assertEqual(rows['first']['consent_text'],'original snapshot')
                 self.assertEqual(rows['first']['line_id'],'')
+                self.assertEqual(rows['first']['transfer_last5'],'')
                 self.assertEqual(rows['second']['status'],'已取消')
                 self.assertEqual(db.execute('SELECT count(*) AS n FROM duplicate_resolution_audit').fetchone()['n'],1)
                 self.assertFalse(json.loads(db.execute('SELECT value FROM settings').fetchone()['value'])['open'])
@@ -154,13 +156,15 @@ class DatabaseTest(unittest.TestCase):
             # that have no LINE column at all.
             with sqlite3.connect(self.path) as src:
                 src.execute("ALTER TABLE registrations ADD COLUMN line_id TEXT NOT NULL DEFAULT ''")
-                src.execute("UPDATE registrations SET line_id='migrated_line' WHERE id='first'")
+                src.execute("ALTER TABLE registrations ADD COLUMN transfer_last5 TEXT NOT NULL DEFAULT ''")
+                src.execute("UPDATE registrations SET line_id='migrated_line', transfer_last5='00123' WHERE id='first'")
             with connect(write=True, url=target) as db:
                 db.execute('DELETE FROM registrations')
                 db.execute('DELETE FROM duplicate_resolution_audit')
             migrate(self.path,target,True,Path(self.temp.name)/'with-line-backup.sqlite3')
             with connect(url=target) as db:
                 self.assertEqual(db.execute("SELECT line_id FROM registrations WHERE id='first'").fetchone()['line_id'],'migrated_line')
+                self.assertEqual(db.execute("SELECT transfer_last5 FROM registrations WHERE id='first'").fetchone()['transfer_last5'],'00123')
         finally:
             with psycopg.connect(original) as db:
                 db.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
