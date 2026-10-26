@@ -1,6 +1,6 @@
 import os, json, secrets, hmac, time, csv, io, threading
 from urllib.parse import urlsplit
-from database import connect, initialize, normalize_email, DuplicateRegistration, DUPLICATE_MESSAGE, next_registration_id
+from database import connect, initialize, normalize_email, DuplicateRegistration, DUPLICATE_MESSAGE, next_registration_id, remember_registration_ids
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
@@ -35,7 +35,7 @@ def settings():
     with connect() as db: return json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()['value'])
 
 def notices(s):
-    return dict(version='2026-10-v1', privacy=f"個人資料蒐集告知｜蒐集者：{s['organizer'] or '尚待設定'}。目的：課程報名、繳費對帳、聯繫、學員管理及課務通知。類別：姓名、電子郵件、電話、LINE ID、轉帳帳號後五碼、報名課程、同意選項及簽署姓名。利用期間：{s['retention'] or '尚待設定'}；地區：臺灣及主辦單位使用之雲端服務所在地，方式為電子及必要紙本處理，對象限主辦單位、受託課務服務人員及必要之雲端代管服務提供者於上述目的必要範圍內使用。你可依個人資料保護法請求查詢、閱覽、複製、補充、更正、停止蒐集處理利用或刪除；聯絡：{s['contact'] or '尚待設定'}。不提供必要資料將無法完成報名。不將資料用於與課程無關的行銷。", portrait='活動記錄肖像授權｜可自由選擇，拒絕不影響報名。若同意，授權主辦單位於上述資料保存期間內，使用課程現場拍攝且包含本人肖像的照片與影片，於官方網站及官方社群公開發布，供本課程活動紀錄及課程介紹使用；網路公開可能跨境瀏覽。不提供第三人作其他商業用途，不作歪曲或有損名譽之使用。可透過個資聯絡方式撤回未來使用授權並申請移除主辦單位控制的內容；已由第三人合法轉載者可能無法完全收回。不同意者請於現場向工作人員表明，以安排避拍或去識別處理。')
+    return dict(version='2026-10-v1', privacy=f"個人資料蒐集告知｜蒐集者：{s['organizer'] or '尚待設定'}。目的：課程報名、繳費對帳、聯繫、學員管理及課務通知。類別：姓名、電子郵件、電話、LINE ID、轉帳帳號後五碼、報名課程、同意選項及簽署姓名。利用期間：{s['retention'] or '尚待設定'}；地區：臺灣及主辦單位使用之雲端服務所在地，方式為電子及必要紙本處理，對象限主辦單位、受託課務服務人員及必要之雲端代管服務提供者於上述目的必要範圍內使用。你可依個人資料保護法請求查詢、閱覽、複製、補充、更正、停止蒐集處理利用或刪除；聯絡：{s['contact'] or '尚待設定'} 0933-015-034 雄先生。不提供必要資料將無法完成報名。不將資料用於與課程無關的行銷。", portrait='活動記錄肖像授權｜可自由選擇，拒絕不影響報名。若同意，授權主辦單位於上述資料保存期間內，使用課程現場拍攝且包含本人肖像的照片與影片，於官方網站及官方社群公開發布，供本課程活動紀錄及課程介紹使用；網路公開可能跨境瀏覽。不提供第三人作其他商業用途，不作歪曲或有損名譽之使用。可透過個資聯絡方式撤回未來使用授權並申請移除主辦單位控制的內容；已由第三人合法轉載者可能無法完全收回。不同意者請於現場向工作人員表明，以安排避拍或去識別處理。')
 
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
@@ -114,6 +114,32 @@ class Handler(BaseHTTPRequestHandler):
                 if s['open'] and (not all(s[k] for k in ['organizer','contact','retention']) or '@' not in s['contact']): return self.send(400,{'error':'開放前請填妥主辦單位、聯絡信箱及保存期限'})
                 with connect(write=True) as db: db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
                 return self.send(200,{'ok':True})
+            if path=='/api/admin/delete':
+                ids = d.get('ids')
+                if not isinstance(ids, list) or not ids or any(not isinstance(rid, str) or not 1 <= len(rid) <= 64 for rid in ids):
+                    return self.send(400, {'error': '請先勾選要刪除的報名資料。'})
+                ids = sorted(set(ids))
+                chunks = [ids[i:i+400] for i in range(0, len(ids), 400)]
+                with connect(write=True) as db:
+                    found = []
+                    for chunk in chunks:
+                        query = 'SELECT id FROM registrations WHERE id IN (' + ','.join('?' for _ in chunk) + ') ORDER BY id'
+                        if db.postgres: query += ' FOR UPDATE'
+                        found.extend(row['id'] for row in db.execute(query, tuple(chunk)).fetchall())
+                    if len(found) != len(ids):
+                        return self.send(409, {'error': '部分資料已不存在，未刪除任何資料；請重新整理名單後再操作。'})
+                    # Keep only sequence high-water marks, never deleted personal data.
+                    remember_registration_ids(db, found)
+                    if db.postgres:
+                        has_audit = db.execute("SELECT to_regclass('duplicate_resolution_audit') AS name").fetchone()['name'] is not None
+                    else:
+                        has_audit = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='duplicate_resolution_audit'").fetchone() is not None
+                    for chunk in chunks:
+                        placeholders = ','.join('?' for _ in chunk)
+                        if has_audit:
+                            db.execute('DELETE FROM duplicate_resolution_audit WHERE registration_id IN (' + placeholders + ')', tuple(chunk))
+                        db.execute('DELETE FROM registrations WHERE id IN (' + placeholders + ')', tuple(chunk))
+                return self.send(200, {'deleted': len(ids)})
             if path=='/api/admin/status':
                 if d.get('status') not in ['待聯繫','已確認','已取消']: raise ValueError()
                 with connect(write=True) as db:

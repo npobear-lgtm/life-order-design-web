@@ -1,11 +1,113 @@
-const $=s=>document.querySelector(s);let rows=[],courses=[];
-async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});const d=await r.json();if(!r.ok)throw Error(d.error||'操作失敗');return d;}
-function cell(tr,text){const td=document.createElement('td');td.textContent=text;tr.append(td);return td;}
-function render(){const q=$('#search').value.trim().toLowerCase(),kind=$('#filter-course').value,portrait=$('#filter-portrait').value;$('#rows').replaceChildren();const filtered=rows.filter(r=>(!kind||r.course_id===kind)&&(!portrait||r.portrait===portrait)&&[r.id,r.name,r.email,r.phone,r.line_id || '',r.transfer_last5 || ''].some(v=>v.toLowerCase().includes(q)));$('#count').textContent=`共 ${rows.length} 筆登記 / ${rows.filter(r=>r.status!=='已取消').length} 筆有效`;$('#empty').hidden=filtered.length>0;
-for(const r of filtered){const tr=document.createElement('tr');cell(tr,r.id+' / '+r.created.slice(0,16).replace('T',' '));const c=courses.find(c=>c.id===r.course_id);cell(tr,c?c.title+' '+c.date:r.course_id);cell(tr,r.name);cell(tr,r.email+' / '+r.phone);cell(tr,r.line_id || '—');cell(tr,r.transfer_last5 || '—');cell(tr,r.portrait==='agree'?'同意':'不同意・請避拍');const td=cell(tr,'');const select=document.createElement('select');select.setAttribute('aria-label',r.name+'的報名狀態');['待聯繫','已確認','已取消'].forEach(s=>{const o=document.createElement('option');o.textContent=s;o.selected=r.status===s;select.append(o);});select.onchange=async()=>{try{await api('/api/admin/status',{id:r.id,status:select.value});r.status=select.value;render();$('#admin-message').textContent='已更新報名狀態';}catch(e){select.value=r.status;$('#admin-message').textContent=e.message;}};td.append(select);const detail=document.createElement('details'),summary=document.createElement('summary'),p=document.createElement('p');summary.textContent='查看簽署';const snapshot=JSON.parse(r.consent_text);p.textContent=`簽署人：${r.signature}\n時間：${r.created}\n個資同意：${r.privacy?'是':'否'}\n肖像授權：${r.portrait==='agree'?'同意':'不同意'}\n版本：${snapshot.version}\n${snapshot.privacy}\n${snapshot.portrait}`;detail.append(summary,p);cell(tr,'').append(detail);$('#rows').append(tr);}}
-async function load(){const d=await api('/api/admin');rows=d.registrations;$('#login').hidden=true;$('#dashboard').hidden=false;for(const k of ['organizer','contact','retention'])$('#settings').elements[k].value=d.settings[k];$('#settings').elements.open.checked=d.settings.open;render();}
-$('#login').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{password:e.target.elements.password.value});e.target.reset();await load();$('#admin-message').textContent='';}catch(e){$('#admin-message').textContent=e.message;}};
-$('#settings').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.target));d.open=e.target.elements.open.checked;try{await api('/api/admin/settings',d);$('#admin-message').textContent='設定已儲存';}catch(e){$('#admin-message').textContent=e.message;}};
-$('#logout').onclick=async()=>{try{await api('/api/logout',{});location.reload();}catch(e){$('#admin-message').textContent=e.message;}};
-['#search','#filter-course','#filter-portrait'].forEach(s=>$(s).addEventListener('input',render));
-api('/api/public').then(d=>{courses=d.courses;for(const c of courses){const o=document.createElement('option');o.value=c.id;o.textContent=c.title+' '+c.date;$('#filter-course').append(o);}return load();}).catch(e=>{if(e.message!=='請先登入')$('#admin-message').textContent=e.message;});
+const $ = selector => document.querySelector(selector);
+let rows = [], courses = [], visibleRows = [], deleting = false;
+const selected = new Set();
+
+async function api(path, body) {
+ const response = await fetch(path, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {});
+ const data = await response.json();
+ if (!response.ok) throw Error(data.error || '操作失敗');
+ return data;
+}
+function cell(tr, text) {
+ const td = document.createElement('td');
+ td.textContent = text;
+ tr.append(td);
+ return td;
+}
+function syncSelection() {
+ const count = visibleRows.filter(row => selected.has(row.id)).length;
+ $('#select-all').checked = count > 0 && count === visibleRows.length;
+ $('#select-all').indeterminate = count > 0 && count < visibleRows.length;
+ $('#select-all').disabled = deleting || !visibleRows.length;
+ $('#selection-count').textContent = `已勾選${count}筆`;
+ $('#delete-selected').disabled = deleting || !count;
+ for (const selector of ['#search', '#filter-course', '#filter-portrait']) $(selector).disabled = deleting;
+}
+function render() {
+ const query = $('#search').value.trim().toLowerCase();
+ const course = $('#filter-course').value, portrait = $('#filter-portrait').value;
+ visibleRows = rows.filter(row => (!course || row.course_id === course) && (!portrait || row.portrait === portrait) &&
+  [row.id,row.name,row.email,row.phone,row.line_id || '',row.transfer_last5 || ''].some(value => value.toLowerCase().includes(query)));
+ const visibleIds = new Set(visibleRows.map(row => row.id));
+ for (const id of selected) if (!visibleIds.has(id)) selected.delete(id);
+ $('#rows').replaceChildren();
+ $('#count').textContent = `共 ${rows.length} 筆登記 / ${rows.filter(row => row.status !== '已取消').length} 筆有效`;
+ $('#empty').hidden = visibleRows.length > 0;
+ for (const row of visibleRows) {
+  const tr = document.createElement('tr');
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'selection-checkbox row-selection';
+  checkbox.setAttribute('aria-label', `選取 ${row.id} ${row.name}`);
+  checkbox.checked = selected.has(row.id);
+  checkbox.disabled = deleting;
+  checkbox.onchange = () => { if (checkbox.checked) selected.add(row.id); else selected.delete(row.id); syncSelection(); };
+  cell(tr, '').append(checkbox);
+  cell(tr, row.id+' / '+row.created.slice(0,16).replace('T',' '));
+  const foundCourse = courses.find(course => course.id === row.course_id);
+  cell(tr, foundCourse ? foundCourse.title+' '+foundCourse.date : row.course_id);
+  cell(tr, row.name);
+  cell(tr, row.email+' / '+row.phone);
+  cell(tr, row.line_id || '—');
+  cell(tr, row.transfer_last5 || '—');
+  cell(tr, row.portrait === 'agree' ? '同意' : '不同意・請避拍');
+  const status = document.createElement('select');
+  status.setAttribute('aria-label', row.name+'的報名狀態');
+  status.disabled = deleting;
+  for (const value of ['待聯繫','已確認','已取消']) {
+   const option = document.createElement('option');
+   option.textContent = value; option.selected = row.status === value; status.append(option);
+  }
+  status.onchange = async () => {
+   try { await api('/api/admin/status', {id:row.id, status:status.value}); row.status=status.value; render(); $('#admin-message').textContent='已更新報名狀態'; }
+   catch (error) { status.value=row.status; $('#admin-message').textContent=error.message; }
+  };
+  cell(tr, '').append(status);
+  const detail = document.createElement('details'), summary = document.createElement('summary'), text = document.createElement('p');
+  summary.textContent='查看簽署';
+  const snapshot=JSON.parse(row.consent_text);
+  text.textContent=`簽署人：${row.signature}\n時間：${row.created}\n個資同意：${row.privacy?'是':'否'}\n肖像授權：${row.portrait==='agree'?'同意':'不同意'}\n版本：${snapshot.version}\n${snapshot.privacy}\n${snapshot.portrait}`;
+  detail.append(summary,text); cell(tr,'').append(detail); $('#rows').append(tr);
+ }
+ syncSelection();
+}
+async function load() {
+ const data = await api('/api/admin');
+ rows=data.registrations; selected.clear();
+ $('#login').hidden=true; $('#dashboard').hidden=false;
+ for (const key of ['organizer','contact','retention']) $('#settings').elements[key].value=data.settings[key];
+ $('#settings').elements.open.checked=data.settings.open; render();
+}
+$('#select-all').onchange = event => {
+ for (const row of visibleRows) { if (event.target.checked) selected.add(row.id); else selected.delete(row.id); }
+ render();
+};
+$('#delete-selected').onclick = async () => {
+ if (deleting || !selected.size) return;
+ const ids = visibleRows.filter(row => selected.has(row.id)).map(row => row.id);
+ if (!ids.length || !window.confirm(`確定永久刪除已勾選的${ids.length}筆報名資料（包含簽署與授權紀錄）？此操作無法復原。`)) return;
+ deleting=true; $('#delete-selected').setAttribute('aria-busy','true'); render();
+ try {
+  const result=await api('/api/admin/delete',{ids});
+  const removed=new Set(ids); rows=rows.filter(row => !removed.has(row.id)); selected.clear();
+  $('#admin-message').textContent=`已刪除${result.deleted}筆報名資料。`;
+ } catch (error) { $('#admin-message').textContent=error.message || '刪除失敗，請稍後再試。'; }
+ finally { deleting=false; $('#delete-selected').removeAttribute('aria-busy'); render(); $('#admin-message').focus(); }
+};
+$('#login').onsubmit=async event => {
+ event.preventDefault();
+ try { await api('/api/login',{password:event.target.elements.password.value}); event.target.reset(); await load(); $('#admin-message').textContent=''; }
+ catch (error) { $('#admin-message').textContent=error.message; }
+};
+$('#settings').onsubmit=async event => {
+ event.preventDefault(); const data=Object.fromEntries(new FormData(event.target)); data.open=event.target.elements.open.checked;
+ try { await api('/api/admin/settings',data); $('#admin-message').textContent='設定已儲存'; }
+ catch (error) { $('#admin-message').textContent=error.message; }
+};
+$('#logout').onclick=async () => { try { await api('/api/logout',{}); location.reload(); } catch (error) { $('#admin-message').textContent=error.message; } };
+for (const selector of ['#search','#filter-course','#filter-portrait']) $(selector).addEventListener('input', () => { selected.clear(); render(); });
+api('/api/public').then(data => {
+ courses=data.courses;
+ for (const course of courses) { const option=document.createElement('option'); option.value=course.id; option.textContent=course.title+' '+course.date; $('#filter-course').append(option); }
+ return load();
+}).catch(error => { if (error.message !== '請先登入') $('#admin-message').textContent=error.message; });

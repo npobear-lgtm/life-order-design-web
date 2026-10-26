@@ -85,6 +85,8 @@ def initialize(url=None, sqlite_path=None):
             phone TEXT NOT NULL, privacy INTEGER NOT NULL, portrait TEXT NOT NULL,
             signature TEXT NOT NULL, consent_text TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '待聯繫', line_id TEXT NOT NULL DEFAULT '', transfer_last5 TEXT NOT NULL DEFAULT '')''')
+        db.execute('CREATE TABLE IF NOT EXISTS registration_number_counters (prefix TEXT PRIMARY KEY, last_number BIGINT NOT NULL)')
+        remember_registration_ids(db, [row['id'] for row in db.execute('SELECT id FROM registrations').fetchall()])
         if db.postgres:
             columns = [r['column_name'] for r in db.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='registrations'")]
         else:
@@ -119,22 +121,32 @@ def initialize(url=None, sqlite_path=None):
         os.chmod(sqlite_path or SQLITE_PATH, 0o600)
 
 
-def next_registration_id(db, course_date):
-    """Allocate within the registration write transaction; canceled IDs stay reserved.
-
-    MMDD prefixes share one sequence, including courses in different years.
-    Legacy random IDs are preserved and excluded from the numeric sequence.
-    """
-    from datetime import date
+def remember_registration_ids(db, ids):
+    """Persist sequence high-water marks without retaining deleted personal data."""
     import re
+    highest = {}
+    for rid in ids:
+        match = re.fullmatch(r'([0-9]{4})-([0-9]{3,})', rid)
+        if match:
+            prefix, number = match.group(1), int(match.group(2))
+            highest[prefix] = max(highest.get(prefix, 0), number)
+    for prefix, number in sorted(highest.items()):
+        db.execute("""INSERT INTO registration_number_counters(prefix,last_number) VALUES(?,?)
+            ON CONFLICT(prefix) DO UPDATE SET last_number=CASE
+            WHEN registration_number_counters.last_number > excluded.last_number
+            THEN registration_number_counters.last_number ELSE excluded.last_number END""", (prefix, number))
+
+
+def next_registration_id(db, course_date):
+    """Allocate inside the registration transaction; canceled/deleted IDs stay used."""
+    from datetime import date
     prefix = date.fromisoformat(course_date[:10]).strftime('%m%d')
     if db.postgres:
-        # Lock before reading the maximum; READ COMMITTED sees the prior winner.
         db.execute('SELECT pg_advisory_xact_lock(?)', (610000 + int(prefix),))
-    # SQLite callers already hold BEGIN IMMEDIATE; PostgreSQL callers hold the
-    # prefix-specific transaction lock until the registration commits/rolls back.
+    # Account for imported or legacy records, including an older app's writes.
     rows = db.execute('SELECT id FROM registrations WHERE id LIKE ?', (prefix + '-%',)).fetchall()
-    pattern = re.compile(re.escape(prefix) + r'-(\d{3,})')
-    highest = max((int(match.group(1)) for row in rows
-                   if (match := pattern.fullmatch(row['id']))), default=0)
-    return f'{prefix}-{highest + 1:03d}'
+    remember_registration_ids(db, [row['id'] for row in rows])
+    row = db.execute("""INSERT INTO registration_number_counters(prefix,last_number) VALUES(?,1)
+        ON CONFLICT(prefix) DO UPDATE SET last_number=registration_number_counters.last_number+1
+        RETURNING last_number""", (prefix,)).fetchone()
+    return f"{prefix}-{row['last_number']:03d}"
