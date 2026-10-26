@@ -9,7 +9,7 @@ import unittest
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uuid
 
-from database import initialize, connect, ExistingDuplicates, DuplicateRegistration
+from database import initialize, connect, ExistingDuplicates, DuplicateRegistration, next_registration_id
 from scripts.resolve_duplicates import resolve
 from scripts.migrate_sqlite_to_postgres import migrate
 
@@ -86,6 +86,24 @@ class DatabaseTest(unittest.TestCase):
                 raise RuntimeError('simulate failure before commit')
         with connect(url='',sqlite_path=self.path) as db:
             self.assertEqual(db.execute('SELECT status FROM registrations').fetchone()['status'],'已確認')
+
+    def test_numbering_prefix_legacy_ids_cross_year_and_overflow(self):
+        legacy_database(self.path)
+        initialize(url='', sqlite_path=self.path)
+        with connect(write=True, url='', sqlite_path=self.path) as db:
+            self.assertEqual(next_registration_id(db, '2027-01-05/2027-01-06'), '0105-001')
+            self.assertEqual(db.execute('SELECT id FROM registrations').fetchone()['id'], 'first')
+            db.execute("UPDATE registrations SET id='0105-999', status='已取消'")
+            self.assertEqual(next_registration_id(db, '2027-01-05'), '0105-1000')
+            self.assertEqual(next_registration_id(db, '2028-01-05'), '0105-1000')
+            self.assertEqual(next_registration_id(db, '2027-03-04'), '0304-001')
+        with self.assertRaises(RuntimeError):
+            with connect(write=True, url='', sqlite_path=self.path) as db:
+                rid = next_registration_id(db, '2027-03-04')
+                db.execute('UPDATE registrations SET id=?', (rid,))
+                raise RuntimeError('rollback allocated number')
+        with connect(write=True, url='', sqlite_path=self.path) as db:
+            self.assertEqual(next_registration_id(db, '2027-03-04'), '0304-001')
 
     def test_production_configuration_fails_closed(self):
         base={**os.environ,'APP_ENV':'production','DATABASE_URL':'postgresql://localhost/life_order_test',

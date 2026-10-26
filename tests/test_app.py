@@ -126,6 +126,31 @@ class AppTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) AS n FROM registrations WHERE status <> '已取消'").fetchone()['n'], 1)
         print('  concurrency: 8 requests -> 1 accepted, 7 conflicts, 1 active row')
 
+    def test_concurrent_distinct_registrations_get_sequential_numbers(self):
+        body = self.payload()
+        course = next(c for c in self.call('/api/public')[1]['courses'] if c['id'] == body['course_id'])
+        prefix = course['date'][5:7] + course['date'][8:10]
+        barrier = threading.Barrier(8)
+        def submit(i):
+            barrier.wait()
+            return self.call('/api/register', {**body, 'email': f'number-{i}@example.org'})
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(submit, range(8)))
+        self.assertEqual([r[0] for r in results], [201] * 8)
+        self.assertEqual(sorted(r[1]['id'] for r in results), [f'{prefix}-{i:03d}' for i in range(1, 9)])
+
+    def test_number_uses_course_start_and_does_not_reuse_canceled_id(self):
+        body = self.payload()
+        course = next(c for c in self.call('/api/public')[1]['courses'] if c['id'] == body['course_id'])
+        prefix = course['date'][5:7] + course['date'][8:10]
+        first = self.call('/api/register', body)[1]['id']
+        self.assertEqual(first, prefix + '-001')
+        cookie = self.login()
+        self.assertEqual(self.call('/api/admin/status', {'id': first, 'status': '已取消'}, cookie)[0], 200)
+        result = self.call('/api/register', body)
+        self.assertEqual(result[0], 201)
+        self.assertEqual(result[1]['id'], prefix + '-002')
+
     def test_cancel_reregister_and_reactivation_conflict(self):
         cookie = self.login()
         body = self.payload()

@@ -113,3 +113,24 @@ def initialize(url=None, sqlite_path=None):
         db.execute('INSERT INTO settings(id,value) VALUES(1,?) ON CONFLICT(id) DO NOTHING', (json.dumps(initial, ensure_ascii=False),))
     if not (DATABASE_URL if url is None else url):
         os.chmod(sqlite_path or SQLITE_PATH, 0o600)
+
+
+def next_registration_id(db, course_date):
+    """Allocate within the registration write transaction; canceled IDs stay reserved.
+
+    MMDD prefixes share one sequence, including courses in different years.
+    Legacy random IDs are preserved and excluded from the numeric sequence.
+    """
+    from datetime import date
+    import re
+    prefix = date.fromisoformat(course_date[:10]).strftime('%m%d')
+    if db.postgres:
+        # Lock before reading the maximum; READ COMMITTED sees the prior winner.
+        db.execute('SELECT pg_advisory_xact_lock(?)', (610000 + int(prefix),))
+    # SQLite callers already hold BEGIN IMMEDIATE; PostgreSQL callers hold the
+    # prefix-specific transaction lock until the registration commits/rolls back.
+    rows = db.execute('SELECT id FROM registrations WHERE id LIKE ?', (prefix + '-%',)).fetchall()
+    pattern = re.compile(re.escape(prefix) + r'-(\d{3,})')
+    highest = max((int(match.group(1)) for row in rows
+                   if (match := pattern.fullmatch(row['id']))), default=0)
+    return f'{prefix}-{highest + 1:03d}'
