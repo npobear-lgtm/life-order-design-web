@@ -54,3 +54,9 @@ python -m unittest discover -s browser_tests -v
 ```
 
 瀏覽器測試啟動獨立暫存 SQLite，不使用真實報名資料。可用 `CHROMIUM_PATH` 指定既有 Chromium；未指定時優先使用系統 `chromium`，否則使用 Playwright 安裝的版本。CI 同時執行後端與瀏覽器測試；Render Blueprint 設為 `checksPass` 後，仍須在 Render 同步此設定，且服務連接的分支通過檢查，才能觸發自動部署。
+
+## 報名編號
+
+新報名使用課程第一天的 `MMDD-流水號`，例如1月5日的 `0105-001`、`0105-002`。每個月日前綴獨立累加；同月日的不同課程或不同年份共用流水號，確保全系統唯一。流水號至少3位，超過999自然接續1000。取消紀錄保留原號，不回收、不重新排列；既有隨機編號維持不變，不需資料庫結構遷移。
+
+編號分配與報名新增在同一交易內。SQLite 使用既有 `BEGIN IMMEDIATE`，PostgreSQL 使用月日前綴的交易級 advisory lock，避免同時報名取得相同編號。失敗或重複報名整筆回滾，不消耗編號。

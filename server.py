@@ -1,6 +1,6 @@
 import os, json, secrets, hmac, time, csv, io, threading
 from urllib.parse import urlsplit
-from database import connect, initialize, normalize_email, DuplicateRegistration, DUPLICATE_MESSAGE
+from database import connect, initialize, normalize_email, DuplicateRegistration, DUPLICATE_MESSAGE, next_registration_id
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
@@ -134,8 +134,8 @@ class Handler(BaseHTTPRequestHandler):
             if values['signature']!=values['name'] or d.get('privacy') is not True or d.get('portrait') not in ['agree','decline']: return self.send(400,{'error':'請完成個資同意、肖像選擇，並以報名姓名簽署'})
             current=notices(s)
             if d.get('notice')!=current: return self.send(409,{'error':'告知內容已更新，請重新整理後閱讀及簽署'})
-            rid=secrets.token_hex(8).upper()
             with connect(write=True) as db:
+                rid = next_registration_id(db, course['date'])
                 db.execute('INSERT INTO registrations(id,created,course_id,name,email,email_key,phone,privacy,portrait,signature,consent_text) VALUES(?,?,?,?,?,?,?,?,?,?,?)', (rid,datetime.now(ZoneInfo('Asia/Taipei')).isoformat(),course['id'],values['name'],values['email'],normalize_email(values['email']),values['phone'],1,d['portrait'],values['signature'],json.dumps(current,ensure_ascii=False)))
             return self.send(201,{'id':rid})
         self.send(404,{'error':'找不到操作'})
