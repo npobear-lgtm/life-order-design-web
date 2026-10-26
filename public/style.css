@@ -20,3 +20,6 @@
 .selection-checkbox{display:inline-block;width:18px;height:18px;padding:0;margin:0;vertical-align:middle}
 .bulk-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:18px}
 .button.delete-button{background:#a7332e;margin-top:0}
+
+.hero-organizers{display:grid;grid-template-columns:max-content minmax(0,1fr);color:var(--muted);font-size:12px;line-height:1.8;margin-top:8px}
+.hero-organizers p{margin:0}
