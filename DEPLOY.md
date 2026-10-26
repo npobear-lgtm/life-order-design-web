@@ -80,4 +80,4 @@ python scripts/migrate_sqlite_to_postgres.py --source /secure/registrations.sqli
 - 備份／還原演練、保存期限清除及權利請求流程。
 - 資料庫區域為新加坡，已反映在個資告知；改區域須同步調整告知。
 
-僅使用1個 Gunicorn worker，登入階段及限流尚未共用到 Redis 或資料庫，不支援多 worker／水平擴展。`autoDeployTrigger: off` 避免未經操作直接發布；PR 合併不會自動部署。
+僅使用1個 Gunicorn worker，登入階段及限流尚未共用到 Redis 或資料庫，不支援多 worker／水平擴展。`autoDeployTrigger: checksPass` 設為 GitHub 檢查通過後自動部署。Render 必須同步此 Blueprint 設定，並連接正確分支；PR 分支提交不會自動更新連接 main 的服務，審查合併後且檢查通過才會部署。

@@ -42,3 +42,15 @@ TEST_GUNICORN=1 TEST_PRODUCTION=1 .venv/bin/python -m unittest discover -s tests
 目前是報名意願登記，尚未整合付款、通知信、容量候補或課程編輯；地點、每日時間與退費規則待補充。電子簽署是輸入姓名及紀錄快照，不含身分核驗或憑證式簽章。保存期限已列告知，但到期刪除、備份清除、權利請求及肖像撤回須另行執行，尚無自動化作業。
 
 管理員登入工作階段保留於單一程序記憶體，8小時到期、重啟須重新登入。因此 Gunicorn 明確使用1 worker、8 threads；暫不支援多 worker 或水平擴展。正式備份／還原、Render 入口 HTTPS 與重啟保存仍須在實際部署後驗收。
+
+## 報名表單瀏覽器測試
+
+送出按鈕不因欄位未填或報名未開放而停用。點擊後列出各欄位的繁體中文錯誤提示及紅框，捲動並聚焦第一個錯誤欄位；修正輸入即更新提示。課程梯次、姓名、電話、Email、個資同意、肖像選擇與同名電子簽署全部通過後，且報名已開放，才呼叫 API。僅請求進行中暫停連點，失敗時保留輸入並可重試。後端驗證仍保留。
+
+```sh
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python -m unittest discover -s browser_tests -v
+```
+
+瀏覽器測試啟動獨立暫存 SQLite，不使用真實報名資料。可用 `CHROMIUM_PATH` 指定既有 Chromium；未指定時優先使用系統 `chromium`，否則使用 Playwright 安裝的版本。CI 同時執行後端與瀏覽器測試；Render Blueprint 設為 `checksPass` 後，仍須在 Render 同步此設定，且服務連接的分支通過檢查，才能觸發自動部署。

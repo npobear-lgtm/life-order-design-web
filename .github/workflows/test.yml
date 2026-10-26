@@ -41,3 +41,14 @@ jobs:
         run: python -m unittest discover -s tests -v
       - run: node --check public/app.js
       - run: node --check public/admin.js
+  browser-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-browser.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: Form validation on desktop and mobile
+        run: python -m unittest discover -s browser_tests -v
