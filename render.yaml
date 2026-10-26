@@ -1,4 +1,12 @@
-# Creates a paid service and persistent disk; review Render's current price before applying.
+# Paid resources. Review current Render prices before creating or applying changes.
+databases:
+  - name: life-order-db
+    region: singapore
+    plan: basic-256mb
+    databaseName: life_order
+    user: life_order
+    postgresMajorVersion: "16"
+    ipAllowList: []
 services:
   - type: web
     name: life-order-design-web
@@ -6,19 +14,23 @@ services:
     region: singapore
     plan: starter
     numInstances: 1
-    buildCommand: python --version
-    startCommand: python server.py
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --worker-class gthread --threads 8 --timeout 30 wsgi:application
     healthCheckPath: /api/public
     autoDeployTrigger: off
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.12
-      - key: HOST
-        value: 0.0.0.0
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: life-order-db
+          property: connectionString
+      - key: PUBLIC_ORIGIN
+        sync: false
       - key: COOKIE_SECURE
         value: "1"
-      - key: DATA_DIR
-        value: /var/data/life-order
       - key: ADMIN_PASSWORD
         sync: false
       - key: ORGANIZER
@@ -27,7 +39,3 @@ services:
         value: orderdesigner2026@gmail.com
       - key: DATA_RETENTION
         value: 自所報名課程梯次最後一日結束後起算一年；期限屆滿後刪除或去識別化
-    disk:
-      name: life-order-data
-      mountPath: /var/data
-      sizeGB: 1

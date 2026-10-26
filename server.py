@@ -1,12 +1,11 @@
-import os, json, sqlite3, secrets, hmac, time, csv, io
+import os, json, secrets, hmac, time, csv, io, threading
+from urllib.parse import urlsplit
+from database import connect, initialize, normalize_email, DuplicateRegistration, DUPLICATE_MESSAGE
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
 
 ROOT = Path(__file__).parent
-DATA = Path(os.environ.get('DATA_DIR', ROOT / '.data'))
-DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
-DB = DATA / 'registrations.sqlite3'
 SESSIONS = {}
 COURSES = []
 for kind, title, hours, price, dates in [
@@ -17,23 +16,23 @@ for kind, title, hours, price, dates in [
         COURSES.append(dict(id=f'{kind}-{i+1}', kind=kind, title=title, hours=hours, price=price, date=date))
 COURSES.sort(key=lambda c: c['date'])
 
-def connect():
-    db = sqlite3.connect(DB)
-    db.row_factory = sqlite3.Row
-    return db
-with connect() as db:
-    db.executescript('''CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS registrations (
-    id TEXT PRIMARY KEY, created TEXT NOT NULL, course_id TEXT NOT NULL, name TEXT NOT NULL,
-    email TEXT NOT NULL, phone TEXT NOT NULL, privacy INTEGER NOT NULL, portrait TEXT NOT NULL,
-    signature TEXT NOT NULL, consent_text TEXT NOT NULL, status TEXT NOT NULL DEFAULT '待聯繫');''')
-    initial = dict(organizer=os.environ.get('ORGANIZER', ''), contact=os.environ.get('PRIVACY_EMAIL', ''),
-                   retention=os.environ.get('DATA_RETENTION', ''), open=False)
-    db.execute('INSERT OR IGNORE INTO settings(id,value) VALUES(1,?)', (json.dumps(initial, ensure_ascii=False),))
-os.chmod(DB, 0o600)
+PRODUCTION = os.environ.get('APP_ENV') == 'production'
+PUBLIC_ORIGIN = os.environ.get('PUBLIC_ORIGIN', '').rstrip('/')
+if PRODUCTION:
+    if not os.environ.get('DATABASE_URL', '').startswith(('postgres://', 'postgresql://')):
+        raise RuntimeError('Production requires PostgreSQL DATABASE_URL; SQLite fallback is forbidden')
+    if len(os.environ.get('ADMIN_PASSWORD', '')) < 12:
+        raise RuntimeError('Production requires ADMIN_PASSWORD with at least 12 characters')
+    if os.environ.get('COOKIE_SECURE') != '1':
+        raise RuntimeError('Production requires COOKIE_SECURE=1')
+    origin = urlsplit(PUBLIC_ORIGIN)
+    if origin.scheme != 'https' or not origin.netloc or origin.path or origin.query or origin.fragment or origin.username is not None or origin.password is not None:
+        raise RuntimeError('Production requires PUBLIC_ORIGIN as an HTTPS origin without a path')
+LOGIN_LOCK = threading.Lock()
+initialize()
 
 def settings():
-    with connect() as db: return json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])
+    with connect() as db: return json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()['value'])
 
 def notices(s):
     return dict(version='2026-10-v1', privacy=f"個人資料蒐集告知｜蒐集者：{s['organizer'] or '尚待設定'}。目的：課程報名、聯繫、學員管理及課務通知。類別：姓名、電子郵件、電話、報名課程、同意選項及簽署姓名。利用期間：{s['retention'] or '尚待設定'}；地區：臺灣及主辦單位使用之雲端服務所在地（採本專案 Render 部署設定時為新加坡），方式為電子及必要紙本處理，對象限主辦單位、受託課務服務人員及必要之雲端代管服務提供者於上述目的必要範圍內使用。你可依個人資料保護法請求查詢、閱覽、複製、補充、更正、停止蒐集處理利用或刪除；聯絡：{s['contact'] or '尚待設定'}。不提供必要資料將無法完成報名。不將資料用於與課程無關的行銷。", portrait='活動記錄肖像授權｜可自由選擇，拒絕不影響報名。若同意，授權主辦單位於上述資料保存期間內，使用課程現場拍攝且包含本人肖像的照片與影片，於官方網站及官方社群公開發布，供本課程活動紀錄及課程介紹使用；網路公開可能跨境瀏覽。不提供第三人作其他商業用途，不作歪曲或有損名譽之使用。可透過個資聯絡方式撤回未來使用授權並申請移除主辦單位控制的內容；已由第三人合法轉載者可能無法完全收回。不同意者請於現場向工作人員表明，以安排避拍或去識別處理。')
@@ -73,7 +72,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200,file.read_bytes(),typ+'; charset=utf-8')
     def do_POST(self):
         origin=self.headers.get('Origin')
-        if origin and origin not in ('http://'+self.headers.get('Host',''),'https://'+self.headers.get('Host','')):
+        allowed = (PUBLIC_ORIGIN,) if PUBLIC_ORIGIN else ('http://'+self.headers.get('Host',''),'https://'+self.headers.get('Host',''))
+        if (PRODUCTION and not origin) or (origin and origin not in allowed):
             return self.send(403,{'error':'不允許跨站請求'})
         if self.headers.get('Content-Type','').split(';')[0] != 'application/json': return self.send(415,{'error':'需要 JSON'})
         try:
@@ -82,15 +82,18 @@ class Handler(BaseHTTPRequestHandler):
             d=json.loads(self.rfile.read(length))
             if not isinstance(d,dict): raise ValueError()
             self.post(d)
+        except DuplicateRegistration: self.send(409, {'error': DUPLICATE_MESSAGE})
         except (ValueError, TypeError, KeyError): self.send(400,{'error':'請檢查輸入資料'})
     def post(self,d):
         path=self.path
         if path=='/api/login':
             # Global rate limiting bounds password guesses and memory use.
-            now=time.time(); attempts=getattr(self.server,'attempts',[])
-            self.server.attempts=[t for t in attempts if now-t<60]
-            if len(self.server.attempts)>=10: return self.send(429,{'error':'登入嘗試過多，請稍後再試'})
-            self.server.attempts.append(now)
+            now=time.time()
+            with LOGIN_LOCK:
+                attempts=getattr(self.server,'attempts',[])
+                self.server.attempts=[t for t in attempts if now-t<60]
+                if len(self.server.attempts)>=10: return self.send(429,{'error':'登入嘗試過多，請稍後再試'})
+                self.server.attempts.append(now)
             password=os.environ.get('ADMIN_PASSWORD','')
             if len(password)<12: return self.send(503,{'error':'管理員尚未設定至少12字元的 ADMIN_PASSWORD'})
             if not hmac.compare_digest(str(d.get('password','')).encode(),password.encode()): return self.send(401,{'error':'密碼不正確'})
@@ -109,11 +112,11 @@ class Handler(BaseHTTPRequestHandler):
                 if any(len(v)>500 for v in s.values()): raise ValueError()
                 s['open']=d.get('open') is True
                 if s['open'] and (not all(s[k] for k in ['organizer','contact','retention']) or '@' not in s['contact']): return self.send(400,{'error':'開放前請填妥主辦單位、聯絡信箱及保存期限'})
-                with connect() as db: db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
+                with connect(write=True) as db: db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
                 return self.send(200,{'ok':True})
             if path=='/api/admin/status':
                 if d.get('status') not in ['待聯繫','已確認','已取消']: raise ValueError()
-                with connect() as db:
+                with connect(write=True) as db:
                     cur=db.execute('UPDATE registrations SET status=? WHERE id=?',(d['status'],d['id']))
                 return self.send(200 if cur.rowcount else 404,{'ok':bool(cur.rowcount)})
             return self.send(404,{'error':'找不到操作'})
@@ -132,13 +135,13 @@ class Handler(BaseHTTPRequestHandler):
             current=notices(s)
             if d.get('notice')!=current: return self.send(409,{'error':'告知內容已更新，請重新整理後閱讀及簽署'})
             rid=secrets.token_hex(8).upper()
-            with connect() as db:
-                exists=db.execute("SELECT id FROM registrations WHERE course_id=? AND lower(email)=lower(?) AND status!='已取消'",(course['id'],values['email'])).fetchone()
-                if exists: return self.send(409,{'error':'此信箱已報名本梯次，請聯絡主辦單位確認'})
-                db.execute('INSERT INTO registrations(id,created,course_id,name,email,phone,privacy,portrait,signature,consent_text) VALUES(?,?,?,?,?,?,?,?,?,?)',(rid,datetime.now(ZoneInfo('Asia/Taipei')).isoformat(),course['id'],values['name'],values['email'],values['phone'],1,d['portrait'],values['signature'],json.dumps(current,ensure_ascii=False)))
+            with connect(write=True) as db:
+                db.execute('INSERT INTO registrations(id,created,course_id,name,email,email_key,phone,privacy,portrait,signature,consent_text) VALUES(?,?,?,?,?,?,?,?,?,?,?)', (rid,datetime.now(ZoneInfo('Asia/Taipei')).isoformat(),course['id'],values['name'],values['email'],normalize_email(values['email']),values['phone'],1,d['portrait'],values['signature'],json.dumps(current,ensure_ascii=False)))
             return self.send(201,{'id':rid})
         self.send(404,{'error':'找不到操作'})
 
 if __name__=='__main__':
+    if PRODUCTION:
+        raise RuntimeError('Use gunicorn wsgi:application in production')
     print('Life Order server starting', flush=True)
     ThreadingHTTPServer((os.environ.get('HOST','127.0.0.1'),int(os.environ.get('PORT','8000'))),Handler).serve_forever()
