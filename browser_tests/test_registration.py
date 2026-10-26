@@ -87,6 +87,7 @@ class RegistrationFormTest(unittest.TestCase):
         self.choose_course()
         self.field('name').fill('  測試學員  ')
         self.field('phone').fill(' 0912345678 ')
+        self.field('line_id').fill('student_line.id')
         self.field('email').fill('student@example.org')
         self.field('privacy').check()
         self.page.locator(f'[name="portrait"][value="{portrait}"]').check()
@@ -103,7 +104,7 @@ class RegistrationFormTest(unittest.TestCase):
                 expect(self.page.locator('#submit')).to_be_enabled()
                 expect(self.page.locator('[aria-invalid="true"]')).to_have_count(0)
                 self.submit()
-                expect(self.page.locator('.field-error:not([hidden])')).to_have_count(7)
+                expect(self.page.locator('.field-error:not([hidden])')).to_have_count(8)
                 expect(self.field('course_id')).to_be_focused()
                 expect(self.field('course_id')).to_be_in_viewport()
                 self.assertEqual(self.field('course_id').evaluate('el => getComputedStyle(el).borderTopColor'),'rgb(179, 59, 53)')
@@ -133,6 +134,9 @@ class RegistrationFormTest(unittest.TestCase):
         self.field('name').fill('測試學員')
         self.submit(); expect(self.field('phone')).to_be_focused()
         self.field('phone').fill('02-2345-6789')
+        self.submit(); expect(self.field('line_id')).to_be_focused()
+        expect(self.page.locator('#registration-line_id-error')).to_contain_text('請填寫LINE ID')
+        self.field('line_id').fill('student_line.id')
         self.submit(); expect(self.field('email')).to_be_focused()
         self.field('email').fill('student@example.org')
         self.submit(); expect(self.field('privacy')).to_be_focused()
@@ -205,10 +209,46 @@ class RegistrationFormTest(unittest.TestCase):
         self.field('name').fill('測試學員')
         self.field('name').press('Enter')
         expect(self.field('course_id')).to_be_focused()
-        expect(self.page.locator('.field-error:not([hidden])')).to_have_count(6)
+        expect(self.page.locator('.field-error:not([hidden])')).to_have_count(7)
         self.page.locator('.course-card').first.get_by_role('button',name='選擇這堂課').click()
         expect(self.page.locator('#registration-course_id-error')).to_be_hidden()
         self.assertEqual(len(self.requests),0)
+
+    def test_contact_row_alignment_and_line_id_storage(self):
+        for width in [1440, 1024, 390]:
+            with self.subTest(width=width):
+                self.page.set_viewport_size({'width': width, 'height': 900})
+                fields = [self.field(name).bounding_box() for name in ['name', 'phone', 'line_id']]
+                above = self.field('course_id').bounding_box()
+                below = self.field('email').bounding_box()
+                self.assertAlmostEqual(fields[0]['x'], above['x'], delta=1)
+                self.assertAlmostEqual(fields[0]['x'], below['x'], delta=1)
+                self.assertAlmostEqual(fields[-1]['x']+fields[-1]['width'], above['x']+above['width'], delta=1)
+                self.assertAlmostEqual(fields[-1]['x']+fields[-1]['width'], below['x']+below['width'], delta=1)
+                if width > 800:
+                    self.assertAlmostEqual(fields[0]['y'], fields[1]['y'], delta=1)
+                    self.assertAlmostEqual(fields[1]['y'], fields[2]['y'], delta=1)
+                    self.assertLess(fields[0]['x'], fields[1]['x'])
+                    self.assertLess(fields[1]['x'], fields[2]['x'])
+                else:
+                    self.assertLess(fields[0]['y'], fields[1]['y'])
+                    self.assertLess(fields[1]['y'], fields[2]['y'])
+                    self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+        self.fill_valid()
+        self.field('line_id').fill('  student_line.id  ')
+        self.submit()
+        expect(self.page.locator('#form-message')).to_contain_text('報名登記成功')
+        self.assertEqual(self.requests[0].post_data_json['line_id'], 'student_line.id')
+        with sqlite3.connect(Path(self.temp.name)/'registrations.sqlite3') as db:
+            self.assertEqual(db.execute('SELECT line_id FROM registrations').fetchone()[0], 'student_line.id')
+
+    def test_line_id_length_error_prevents_api_call(self):
+        self.fill_valid()
+        self.field('line_id').evaluate("input => { input.value = 'x'.repeat(101); }")
+        self.submit()
+        expect(self.field('line_id')).to_be_focused()
+        expect(self.page.locator('#registration-line_id-error')).to_contain_text('100個字元')
+        self.assertEqual(len(self.requests), 0)
 
     def test_load_failure_keeps_button_enabled_and_does_not_submit(self):
         self.page.route('**/api/public',lambda route:route.fulfill(status=503,json={'error':'unavailable'}))

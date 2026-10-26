@@ -9,3 +9,7 @@
 #registration-form fieldset .field-error{margin:8px 0 0}
 #registration-form .field-error[hidden]{display:none}
 #registration-form #form-message.form-error{color:#b33b35}
+
+#registration-form .contact-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+#registration-form .contact-grid>label{min-width:0}
+@media(max-width:800px){#registration-form .contact-grid{grid-template-columns:minmax(0,1fr)}}

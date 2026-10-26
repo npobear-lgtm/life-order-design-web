@@ -106,7 +106,7 @@ class AppTest(unittest.TestCase):
         today = datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
         course = next(c for c in public['courses'] if c['date'][:10] >= today)
         return {**dict(course_id=course['id'], name='測試學員', email='test@example.org',
-                       phone='0912345678', signature='測試學員', privacy=True,
+                       phone='0912345678', line_id='test_line_id', signature='測試學員', privacy=True,
                        portrait='decline', notice=public['notices']), **overrides}
 
     def test_concurrent_eight_submissions(self):
@@ -207,6 +207,26 @@ class AppTest(unittest.TestCase):
         cookie=self.login()
         self.assertEqual(self.call('/api/logout',{},cookie)[0],200)
         self.assertEqual(self.call('/api/admin',cookie=cookie)[0],401)
+
+    def test_required_line_id_saved_and_exported(self):
+        body = self.payload(line_id='  student_line.id  ')
+        self.assertEqual(self.call('/api/register', body)[0], 201)
+        cookie = self.login()
+        row = self.call('/api/admin', cookie=cookie)[1]['registrations'][0]
+        self.assertEqual(row['line_id'], 'student_line.id')
+        self.assertIn('LINE ID', json.loads(row['consent_text'])['privacy'])
+        exported = self.call('/api/admin/export', cookie=cookie)[1].decode('utf-8-sig')
+        self.assertIn('LINE ID', exported)
+        self.assertIn('student_line.id', exported)
+
+    def test_line_id_required_and_rejects_invalid_type_or_length(self):
+        body = self.payload()
+        self.assertEqual(self.call('/api/register', {**body, 'line_id': 'x'*101})[0], 400)
+        self.assertEqual(self.call('/api/register', {**body, 'line_id': None})[0], 400)
+        self.assertEqual(self.call('/api/register', {**body, 'line_id': '   '})[0], 400)
+        missing = {k: v for k, v in body.items() if k != 'line_id'}
+        self.assertEqual(self.call('/api/register', missing)[0], 400)
+        self.assertEqual(self.call('/api/register', body)[0], 201)
 
     def test_cross_site_requests_rejected(self):
         for path in ['/api/register','/api/login','/api/admin/settings','/api/admin/status']:

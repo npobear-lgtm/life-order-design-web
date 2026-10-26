@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from database import connect, initialize, duplicate_groups, Connection, normalize_email
 
-FIELDS = ['id','created','course_id','name','email','phone','privacy','portrait','signature','consent_text','status']
+FIELDS = ['id','created','course_id','name','email','phone','privacy','portrait','signature','consent_text','status','line_id']
 
 
 def migrate(source, target, apply=False, backup=None):
@@ -47,7 +47,7 @@ def migrate(source, target, apply=False, backup=None):
         fields = FIELDS + ['email_key']
         for row in rows:
             db.execute(f"INSERT INTO registrations({','.join(fields)}) VALUES({','.join('?' for _ in fields)})",
-                       tuple(row[k] for k in FIELDS) + (normalize_email(row['email']),))
+                       tuple(row.get(k, '') if k == 'line_id' else row[k] for k in FIELDS) + (normalize_email(row['email']),))
         db.execute('CREATE TABLE IF NOT EXISTS duplicate_resolution_audit (registration_id TEXT PRIMARY KEY, previous_status TEXT NOT NULL, resolved_at TEXT NOT NULL, reason TEXT NOT NULL)')
         for row in audits:
             db.execute('INSERT INTO duplicate_resolution_audit VALUES(?,?,?,?)',

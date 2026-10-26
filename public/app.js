@@ -19,7 +19,7 @@ fetch('/api/public').then(r=>{if(!r.ok)throw Error();return r.json();}).then(d=>
  document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));if(data)cards(b.dataset.filter);});
 // Use inline validation instead of browser popups so every missing field is visible.
 const form = $('#registration-form');
-const fieldNames = ['course_id', 'name', 'phone', 'email', 'privacy', 'portrait', 'signature'];
+const fieldNames = ['course_id', 'name', 'phone', 'line_id', 'email', 'privacy', 'portrait', 'signature'];
 const fieldUI = new Map();
 let validationAttempted = false;
 let submitting = false;
@@ -56,6 +56,10 @@ function fieldError(name) {
   if (!value) return '請填寫聯絡電話。';
   const digits = value.replace(/\D/g, '');
   if (!/^[+()\d\s-]{7,30}$/.test(value) || digits.length < 7 || digits.length > 15) return '請填寫有效電話，例如0912345678或02-2345-6789。';
+ }
+ if (name === 'line_id') {
+  if (!value) return '請填寫LINE ID。';
+  if (value.length > 100) return 'LINE ID請勿超過100個字元。';
  }
  if (name === 'email') {
   if (!value) return '請填寫電子郵件。';
@@ -136,7 +140,7 @@ form.onsubmit = async event => {
  form.setAttribute('aria-busy', 'true');
  try {
   const body = Object.fromEntries(new FormData(form));
-  for (const name of ['name', 'phone', 'email', 'signature']) body[name] = body[name].trim();
+  for (const name of ['name', 'phone', 'line_id', 'email', 'signature']) body[name] = body[name].trim();
   body.privacy = form.elements.privacy.checked;
   body.notice = data.notices;
   const response = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
