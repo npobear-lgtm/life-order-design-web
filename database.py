@@ -84,7 +84,7 @@ def initialize(url=None, sqlite_path=None):
             name TEXT NOT NULL, email TEXT NOT NULL, email_key TEXT NOT NULL,
             phone TEXT NOT NULL, privacy INTEGER NOT NULL, portrait TEXT NOT NULL,
             signature TEXT NOT NULL, consent_text TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT '待聯繫', line_id TEXT NOT NULL DEFAULT '')''')
+            status TEXT NOT NULL DEFAULT '待聯繫', line_id TEXT NOT NULL DEFAULT '', transfer_last5 TEXT NOT NULL DEFAULT '')''')
         if db.postgres:
             columns = [r['column_name'] for r in db.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='registrations'")]
         else:
@@ -93,6 +93,8 @@ def initialize(url=None, sqlite_path=None):
             db.execute('ALTER TABLE registrations ADD COLUMN email_key TEXT')
         if 'line_id' not in columns:
             db.execute("ALTER TABLE registrations ADD COLUMN line_id TEXT NOT NULL DEFAULT ''")
+        if 'transfer_last5' not in columns:
+            db.execute("ALTER TABLE registrations ADD COLUMN transfer_last5 TEXT NOT NULL DEFAULT ''")
         # Never silently delete or cancel previously accepted registrations.
         groups = duplicate_groups(db)
         if groups:

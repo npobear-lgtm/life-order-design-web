@@ -19,7 +19,7 @@ fetch('/api/public').then(r=>{if(!r.ok)throw Error();return r.json();}).then(d=>
  document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));if(data)cards(b.dataset.filter);});
 // Use inline validation instead of browser popups so every missing field is visible.
 const form = $('#registration-form');
-const fieldNames = ['course_id', 'name', 'phone', 'line_id', 'email', 'privacy', 'portrait', 'signature'];
+const fieldNames = ['course_id', 'name', 'phone', 'line_id', 'email', 'privacy', 'portrait', 'transfer_last5', 'signature'];
 const fieldUI = new Map();
 let validationAttempted = false;
 let submitting = false;
@@ -67,6 +67,10 @@ function fieldError(name) {
  }
  if (name === 'privacy' && !control.checked) return '請閱讀並勾選個人資料蒐集、處理及利用同意。';
  if (name === 'portrait' && !fieldUI.get(name).controls.some(input => input.checked && ['agree', 'decline'].includes(input.value))) return '請選擇同意或不同意影像（肖像）授權；不同意不影響報名。';
+ if (name === 'transfer_last5') {
+  if (!value) return '請填寫轉帳後五碼。';
+  if (!/^[0-9]{5}$/.test(value)) return '轉帳後五碼須為5位數字，例如00123。';
+ }
  if (name === 'signature') {
   if (!value) return '請輸入完整姓名完成電子簽署。';
   if (value !== form.elements.namedItem('name').value.trim()) return '電子簽署姓名必須與報名姓名完全一致。';
@@ -140,7 +144,7 @@ form.onsubmit = async event => {
  form.setAttribute('aria-busy', 'true');
  try {
   const body = Object.fromEntries(new FormData(form));
-  for (const name of ['name', 'phone', 'line_id', 'email', 'signature']) body[name] = body[name].trim();
+  for (const name of ['name', 'phone', 'line_id', 'email', 'transfer_last5', 'signature']) body[name] = body[name].trim();
   body.privacy = form.elements.privacy.checked;
   body.notice = data.notices;
   const response = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -148,7 +152,7 @@ form.onsubmit = async event => {
   if (!response.ok) throw Error(result.error || '報名未完成，請稍後再試。');
   form.reset();
   clearValidation();
-  showMessage(`報名登記成功！編號：${result.id}。請保存編號，主辦單位將另行聯繫；本網站未收取費用。`, false);
+  showMessage(`報名登記成功！編號：${result.id}。請保存編號，轉帳資訊待主辦單位人工核對，課務通知請留意LINE群組。`, false);
  } catch (error) {
   showMessage(error.message || '傳送失敗，請稍後再試。');
  } finally {

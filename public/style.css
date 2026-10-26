@@ -13,3 +13,5 @@
 #registration-form .contact-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 #registration-form .contact-grid>label{min-width:0}
 @media(max-width:800px){#registration-form .contact-grid{grid-template-columns:minmax(0,1fr)}}
+
+#registration-form .payment-info{margin:20px 0;overflow-wrap:anywhere}

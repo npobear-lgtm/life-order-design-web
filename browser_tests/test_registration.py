@@ -91,6 +91,7 @@ class RegistrationFormTest(unittest.TestCase):
         self.field('email').fill('student@example.org')
         self.field('privacy').check()
         self.page.locator(f'[name="portrait"][value="{portrait}"]').check()
+        self.field('transfer_last5').fill('00123')
         self.field('signature').fill('測試學員')
 
     def submit(self):
@@ -104,7 +105,7 @@ class RegistrationFormTest(unittest.TestCase):
                 expect(self.page.locator('#submit')).to_be_enabled()
                 expect(self.page.locator('[aria-invalid="true"]')).to_have_count(0)
                 self.submit()
-                expect(self.page.locator('.field-error:not([hidden])')).to_have_count(8)
+                expect(self.page.locator('.field-error:not([hidden])')).to_have_count(9)
                 expect(self.field('course_id')).to_be_focused()
                 expect(self.field('course_id')).to_be_in_viewport()
                 self.assertEqual(self.field('course_id').evaluate('el => getComputedStyle(el).borderTopColor'),'rgb(179, 59, 53)')
@@ -143,6 +144,8 @@ class RegistrationFormTest(unittest.TestCase):
         self.field('privacy').check()
         self.submit(); expect(self.field('portrait').first).to_be_focused()
         self.page.locator('[name="portrait"][value="decline"]').check()
+        self.submit(); expect(self.field('transfer_last5')).to_be_focused()
+        self.field('transfer_last5').fill('00123')
         self.submit(); expect(self.field('signature')).to_be_focused()
         self.field('signature').fill('測試學員')
         expect(self.page.locator('.field-error:not([hidden])')).to_have_count(0)
@@ -209,7 +212,7 @@ class RegistrationFormTest(unittest.TestCase):
         self.field('name').fill('測試學員')
         self.field('name').press('Enter')
         expect(self.field('course_id')).to_be_focused()
-        expect(self.page.locator('.field-error:not([hidden])')).to_have_count(7)
+        expect(self.page.locator('.field-error:not([hidden])')).to_have_count(8)
         self.page.locator('.course-card').first.get_by_role('button',name='選擇這堂課').click()
         expect(self.page.locator('#registration-course_id-error')).to_be_hidden()
         self.assertEqual(len(self.requests),0)
@@ -249,6 +252,49 @@ class RegistrationFormTest(unittest.TestCase):
         expect(self.field('line_id')).to_be_focused()
         expect(self.page.locator('#registration-line_id-error')).to_contain_text('100個字元')
         self.assertEqual(len(self.requests), 0)
+
+    def test_transfer_last5_validation_bank_details_and_notice(self):
+        notice = self.page.locator('.registration > div .note')
+        expect(notice).to_have_text('報名繳費前請務必聯繫主辦單位，確認是否額滿及退費規則。上課時間、地點及相關通知將於LINE群組公告。')
+        expect(notice.locator('strong')).to_have_text('務必')
+        bank = self.page.locator('.payment-info')
+        for text in ['安頤貿易股份有限公司', '永豐銀行 807〈五股分行〉', '150-018-0051081-7']:
+            expect(bank).to_contain_text(text)
+        self.assertTrue(self.field('transfer_last5').evaluate("input => !!(input.compareDocumentPosition(document.querySelector('[name=signature]')) & Node.DOCUMENT_POSITION_FOLLOWING)"))
+        self.fill_valid()
+        for value in ['', '1234', 'abcde', '１２３４５']:
+            self.field('transfer_last5').fill(value)
+            self.submit()
+            expect(self.field('transfer_last5')).to_be_focused()
+            expect(self.field('transfer_last5')).to_have_attribute('aria-invalid', 'true')
+            expect(self.page.locator('#registration-transfer_last5-error')).to_be_visible()
+            self.assertEqual(len(self.requests), 0)
+        self.field('transfer_last5').fill('00123')
+        expect(self.page.locator('#registration-transfer_last5-error')).to_be_hidden()
+        self.submit()
+        expect(self.page.locator('#form-message')).to_contain_text('報名登記成功')
+        self.assertEqual(self.requests[0].post_data_json['transfer_last5'], '00123')
+        with sqlite3.connect(Path(self.temp.name)/'registrations.sqlite3') as db:
+            self.assertEqual(db.execute('SELECT transfer_last5,status FROM registrations').fetchone(), ('00123','待聯繫'))
+
+    def test_admin_transfer_last5_display_search_and_export(self):
+        self.fill_valid()
+        self.submit()
+        expect(self.page.locator('#form-message')).to_contain_text('報名登記成功')
+        self.page.goto(self.base+'/admin')
+        self.page.locator('[name=password]').fill('browser-test-only-password')
+        self.page.get_by_role('button', name='登入後台').click()
+        expect(self.page.locator('#rows tr')).to_have_count(1)
+        expect(self.page.locator('#rows')).to_contain_text('00123')
+        self.page.locator('#search').fill('not-present')
+        expect(self.page.locator('#rows tr')).to_have_count(0)
+        self.page.locator('#search').fill('00123')
+        expect(self.page.locator('#rows tr')).to_have_count(1)
+        response = self.context.request.get(self.base+'/api/admin/export')
+        self.assertEqual(response.status, 200)
+        import csv, io
+        export = list(csv.DictReader(io.StringIO(response.body().decode('utf-8-sig'))))
+        self.assertEqual(export[0]['轉帳後五碼'], '00123')
 
     def test_load_failure_keeps_button_enabled_and_does_not_submit(self):
         self.page.route('**/api/public',lambda route:route.fulfill(status=503,json={'error':'unavailable'}))
