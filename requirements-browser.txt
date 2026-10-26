@@ -1,0 +1,2 @@
+# Optional browser regression test dependency; not installed on the web service.
+playwright==1.62.0
