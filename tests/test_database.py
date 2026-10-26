@@ -97,7 +97,7 @@ class DatabaseTest(unittest.TestCase):
             self.assertEqual(db.execute('SELECT id FROM registrations').fetchone()['id'], 'first')
             db.execute("UPDATE registrations SET id='0105-999', status='已取消'")
             self.assertEqual(next_registration_id(db, '2027-01-05'), '0105-1000')
-            self.assertEqual(next_registration_id(db, '2028-01-05'), '0105-1000')
+            self.assertEqual(next_registration_id(db, '2028-01-05'), '0105-1001')
             self.assertEqual(next_registration_id(db, '2027-03-04'), '0304-001')
         with self.assertRaises(RuntimeError):
             with connect(write=True, url='', sqlite_path=self.path) as db:
@@ -105,7 +105,7 @@ class DatabaseTest(unittest.TestCase):
                 db.execute('UPDATE registrations SET id=?', (rid,))
                 raise RuntimeError('rollback allocated number')
         with connect(write=True, url='', sqlite_path=self.path) as db:
-            self.assertEqual(next_registration_id(db, '2027-03-04'), '0304-001')
+            self.assertEqual(next_registration_id(db, '2027-03-04'), '0304-002')
 
     def test_production_configuration_fails_closed(self):
         base={**os.environ,'APP_ENV':'production','DATABASE_URL':'postgresql://localhost/life_order_test',
@@ -158,6 +158,8 @@ class DatabaseTest(unittest.TestCase):
                 src.execute("ALTER TABLE registrations ADD COLUMN line_id TEXT NOT NULL DEFAULT ''")
                 src.execute("ALTER TABLE registrations ADD COLUMN transfer_last5 TEXT NOT NULL DEFAULT ''")
                 src.execute("UPDATE registrations SET line_id='migrated_line', transfer_last5='00123' WHERE id='first'")
+                src.execute('CREATE TABLE registration_number_counters(prefix TEXT PRIMARY KEY,last_number BIGINT NOT NULL)')
+                src.execute("INSERT INTO registration_number_counters VALUES('0105',42)")
             with connect(write=True, url=target) as db:
                 db.execute('DELETE FROM registrations')
                 db.execute('DELETE FROM duplicate_resolution_audit')
@@ -165,6 +167,7 @@ class DatabaseTest(unittest.TestCase):
             with connect(url=target) as db:
                 self.assertEqual(db.execute("SELECT line_id FROM registrations WHERE id='first'").fetchone()['line_id'],'migrated_line')
                 self.assertEqual(db.execute("SELECT transfer_last5 FROM registrations WHERE id='first'").fetchone()['transfer_last5'],'00123')
+                self.assertEqual(next_registration_id(db, '2027-01-05'), '0105-043')
         finally:
             with psycopg.connect(original) as db:
                 db.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))

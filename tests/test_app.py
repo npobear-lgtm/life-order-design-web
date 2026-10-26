@@ -68,6 +68,7 @@ class AppTest(unittest.TestCase):
     def setUp(self):
         with connect(write=True, url=self.url, sqlite_path=Path(self.tmp.name)/'registrations.sqlite3') as db:
             db.execute('DELETE FROM registrations')
+            db.execute('DELETE FROM registration_number_counters')
             config = dict(organizer='測試主辦', contact='privacy@example.org', retention='活動後一年', open=True)
             db.execute('UPDATE settings SET value=? WHERE id=1', (json.dumps(config),))
 
@@ -151,6 +152,35 @@ class AppTest(unittest.TestCase):
         self.assertEqual(result[0], 201)
         self.assertEqual(result[1]['id'], prefix + '-002')
 
+    def test_bulk_delete_is_atomic_and_never_reuses_numbers(self):
+        body = self.payload()
+        ids = []
+        for i in range(3):
+            code, result, _ = self.call('/api/register', {**body, 'email': f'delete-{i}@example.org'})
+            self.assertEqual(code, 201)
+            ids.append(result['id'])
+        cookie = self.login()
+        for invalid in [[], 'all', [None], [123], ['']]:
+            self.assertEqual(self.call('/api/admin/delete', {'ids': invalid}, cookie)[0], 400)
+        self.assertEqual(self.call('/api/admin/delete', {'ids': [ids[0], 'missing-id']}, cookie)[0], 409)
+        self.assertEqual(len(self.call('/api/admin', cookie=cookie)[1]['registrations']), 3)
+        with connect(write=True, url=self.url, sqlite_path=Path(self.tmp.name)/'registrations.sqlite3') as db:
+            db.execute('CREATE TABLE IF NOT EXISTS duplicate_resolution_audit (registration_id TEXT PRIMARY KEY, previous_status TEXT NOT NULL, resolved_at TEXT NOT NULL, reason TEXT NOT NULL)')
+            db.execute('INSERT INTO duplicate_resolution_audit VALUES(?,?,?,?)', (ids[2], '待聯繫', '2026-10-26', 'test'))
+        code, result, _ = self.call('/api/admin/delete', {'ids': [ids[0], ids[2], ids[0]]}, cookie)
+        self.assertEqual(code, 200)
+        self.assertEqual(result['deleted'], 2)
+        remaining = self.call('/api/admin', cookie=cookie)[1]['registrations']
+        self.assertEqual([row['id'] for row in remaining], [ids[1]])
+        with connect(url=self.url, sqlite_path=Path(self.tmp.name)/'registrations.sqlite3') as db:
+            self.assertIsNone(db.execute('SELECT registration_id FROM duplicate_resolution_audit WHERE registration_id=?', (ids[2],)).fetchone())
+        export = self.call('/api/admin/export', cookie=cookie)[1].decode('utf-8-sig')
+        self.assertNotIn('delete-0@example.org', export)
+        self.assertNotIn('delete-2@example.org', export)
+        new = self.call('/api/register', {**body, 'email':'delete-0@example.org'})
+        self.assertEqual(new[0], 201)
+        self.assertEqual(new[1]['id'], ids[0].rsplit('-',1)[0]+'-004')
+
     def test_cancel_reregister_and_reactivation_conflict(self):
         cookie = self.login()
         body = self.payload()
@@ -198,7 +228,7 @@ class AppTest(unittest.TestCase):
     def test_admin_endpoints_require_authentication(self):
         for path in ['/api/admin','/api/admin/export']:
             self.assertEqual(self.call(path)[0],401)
-        for path in ['/api/admin/settings','/api/admin/status','/api/logout']:
+        for path in ['/api/admin/settings','/api/admin/status','/api/admin/delete','/api/logout']:
             self.assertEqual(self.call(path,{})[0],401)
         self.assertEqual(self.call('/api/login',{'password':'wrong'})[0],401)
         self.assertEqual(self.call('/api/admin',cookie='session=forged')[0],401)
@@ -249,7 +279,7 @@ class AppTest(unittest.TestCase):
         self.assertEqual(list(csv.DictReader(io.StringIO(export)))[0]['轉帳後五碼'], '00123')
 
     def test_cross_site_requests_rejected(self):
-        for path in ['/api/register','/api/login','/api/admin/settings','/api/admin/status']:
+        for path in ['/api/register','/api/login','/api/admin/settings','/api/admin/status','/api/admin/delete']:
             self.assertEqual(self.call(path,{},origin='https://evil.example')[0],403)
         if self.production:
             self.assertEqual(self.call('/api/login',{},origin=False)[0],403)

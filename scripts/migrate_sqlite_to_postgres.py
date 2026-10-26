@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from database import connect, initialize, duplicate_groups, Connection, normalize_email
+from database import connect, initialize, duplicate_groups, Connection, normalize_email, remember_registration_ids
 
 FIELDS = ['id','created','course_id','name','email','phone','privacy','portrait','signature','consent_text','status','line_id','transfer_last5']
 
@@ -24,6 +24,8 @@ def migrate(source, target, apply=False, backup=None):
         config = json.loads(raw.execute('SELECT value FROM settings WHERE id=1').fetchone()['value'])
         audit_exists = raw.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='duplicate_resolution_audit'").fetchone()
         audits = [dict(r) for r in raw.execute('SELECT * FROM duplicate_resolution_audit')] if audit_exists else []
+        counter_table = raw.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='registration_number_counters'").fetchone()
+        counters = [dict(row) for row in raw.execute('SELECT prefix,last_number FROM registration_number_counters')] if counter_table else []
         # Preserve a consistent source snapshot. Stop all writers before running --apply.
         if apply:
             if not backup or Path(backup).resolve() == source:
@@ -39,7 +41,7 @@ def migrate(source, target, apply=False, backup=None):
     initialize(url=target)
     # One transaction: a failure cannot leave a partially copied database.
     with connect(write=True, url=target) as db:
-        db.execute('LOCK TABLE registrations, settings IN EXCLUSIVE MODE')
+        db.execute('LOCK TABLE registrations, settings, registration_number_counters IN EXCLUSIVE MODE')
         if db.execute('SELECT count(*) AS n FROM registrations').fetchone()['n']:
             raise ValueError('Destination is not empty; refusing to overwrite or merge')
         config['open'] = False
@@ -52,6 +54,8 @@ def migrate(source, target, apply=False, backup=None):
         for row in audits:
             db.execute('INSERT INTO duplicate_resolution_audit VALUES(?,?,?,?)',
                        tuple(row[k] for k in ['registration_id','previous_status','resolved_at','reason']))
+        remember_registration_ids(db, [row['id'] for row in rows])
+        remember_registration_ids(db, [f"{row['prefix']}-{row['last_number']:03d}" for row in counters])
         copied = db.execute('SELECT count(*) AS n FROM registrations').fetchone()['n']
         if copied != len(rows):
             raise ValueError('Migration count mismatch')

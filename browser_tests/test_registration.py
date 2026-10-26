@@ -68,6 +68,7 @@ class RegistrationFormTest(unittest.TestCase):
     def configure(self, opened):
         with sqlite3.connect(Path(self.temp.name)/'registrations.sqlite3') as db:
             db.execute('DELETE FROM registrations')
+            db.execute('DELETE FROM registration_number_counters')
             value = json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])
             value['open'] = opened
             db.execute('UPDATE settings SET value=? WHERE id=1', (json.dumps(value),))
@@ -295,6 +296,71 @@ class RegistrationFormTest(unittest.TestCase):
         import csv, io
         export = list(csv.DictReader(io.StringIO(response.body().decode('utf-8-sig'))))
         self.assertEqual(export[0]['轉帳後五碼'], '00123')
+
+    def seed_admin_rows(self):
+        self.fill_valid()
+        self.submit()
+        expect(self.page.locator('#form-message')).to_contain_text('報名登記成功')
+        body = self.requests[-1].post_data_json
+        for email in ['other@example.org','third@example.org']:
+            response = self.context.request.post(self.base+'/api/register', data={**body,'email':email})
+            self.assertEqual(response.status,201)
+        self.page.goto(self.base+'/admin')
+        self.page.locator('[name=password]').fill('browser-test-only-password')
+        self.page.get_by_role('button',name='登入後台').click()
+        expect(self.page.locator('#rows tr')).to_have_count(3)
+
+    def test_sponsor_note_is_red_and_contact_is_appended(self):
+        note = self.page.locator('.sponsor-note')
+        expect(note).to_have_text('（11/1、11/29全額贊助，只需繳實習保證金2800元）')
+        self.assertEqual(note.evaluate('element => getComputedStyle(element).color'),'rgb(179, 59, 53)')
+        expect(self.page.locator('#privacy-text')).to_contain_text('0933-015-034 雄先生')
+
+    def test_admin_bulk_selection_cancel_delete_and_no_hidden_rows(self):
+        self.seed_admin_rows()
+        expect(self.page.locator('#delete-selected')).to_be_disabled()
+        self.page.locator('.row-selection').first.check()
+        self.assertTrue(self.page.locator('#select-all').evaluate('element => element.indeterminate'))
+        self.page.locator('#select-all').check()
+        expect(self.page.locator('.row-selection:checked')).to_have_count(3)
+        self.page.locator('#select-all').uncheck()
+        expect(self.page.locator('.row-selection:checked')).to_have_count(0)
+        self.page.locator('#search').fill('other@example.org')
+        expect(self.page.locator('#rows tr')).to_have_count(1)
+        self.page.locator('#select-all').check()
+        self.page.locator('#search').fill('')
+        expect(self.page.locator('.row-selection:checked')).to_have_count(0)
+        self.page.locator('#search').fill('other@example.org')
+        self.page.locator('#select-all').check()
+        self.page.once('dialog', lambda dialog: dialog.dismiss())
+        self.page.locator('#delete-selected').click()
+        expect(self.page.locator('#rows tr')).to_have_count(1)
+        self.page.once('dialog', lambda dialog: dialog.accept())
+        self.page.locator('#delete-selected').click()
+        expect(self.page.locator('#admin-message')).to_have_text('已刪除1筆報名資料。')
+        expect(self.page.locator('#rows tr')).to_have_count(0)
+        self.page.locator('#search').fill('')
+        expect(self.page.locator('#rows tr')).to_have_count(2)
+        self.page.locator('#select-all').check()
+        self.page.once('dialog', lambda dialog: dialog.accept())
+        self.page.locator('#delete-selected').click()
+        expect(self.page.locator('#admin-message')).to_have_text('已刪除2筆報名資料。')
+        expect(self.page.locator('#rows tr')).to_have_count(0)
+        expect(self.page.locator('#select-all')).to_be_disabled()
+        expect(self.page.locator('#delete-selected')).to_be_disabled()
+        self.page.reload()
+        expect(self.page.locator('#empty')).to_be_visible()
+
+    def test_admin_bulk_delete_failure_preserves_selection(self):
+        self.seed_admin_rows()
+        self.page.route('**/api/admin/delete',lambda route:route.fulfill(status=503,json={'error':'暫時無法刪除，請稍後再試。'}))
+        self.page.locator('.row-selection').first.check()
+        self.page.once('dialog',lambda dialog:dialog.accept())
+        self.page.locator('#delete-selected').click()
+        expect(self.page.locator('#admin-message')).to_have_text('暫時無法刪除，請稍後再試。')
+        expect(self.page.locator('#rows tr')).to_have_count(3)
+        expect(self.page.locator('.row-selection:checked')).to_have_count(1)
+        expect(self.page.locator('#delete-selected')).to_be_enabled()
 
     def test_load_failure_keeps_button_enabled_and_does_not_submit(self):
         self.page.route('**/api/public',lambda route:route.fulfill(status=503,json={'error':'unavailable'}))

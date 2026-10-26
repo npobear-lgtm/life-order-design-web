@@ -15,3 +15,8 @@
 @media(max-width:800px){#registration-form .contact-grid{grid-template-columns:minmax(0,1fr)}}
 
 #registration-form .payment-info{margin:20px 0;overflow-wrap:anywhere}
+
+.sponsor-note{color:#b33b35;font-weight:600}
+.selection-checkbox{display:inline-block;width:18px;height:18px;padding:0;margin:0;vertical-align:middle}
+.bulk-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:18px}
+.button.delete-button{background:#a7332e;margin-top:0}
